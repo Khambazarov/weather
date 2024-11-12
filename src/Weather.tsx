@@ -1,6 +1,7 @@
-import { useState, FC, useEffect } from "react";
-import { NavLink, useParams, Navigate } from "react-router-dom";
+import { FC, useRef } from "react";
+import { NavLink, useParams, Navigate, useNavigate } from "react-router-dom";
 import axios from "axios";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 const API_KEY = import.meta.env.VITE_WEATHER_API_KEY;
 
@@ -76,36 +77,70 @@ type WeatherData = {
   };
 };
 
+const getCitiesFromLocalStorage = (): string[] => {
+  const cities = localStorage.getItem("cities");
+  return cities ? JSON.parse(cities) : ["kiel"];
+};
+
+const setCitiesToLocalStorage = (cities: string[]) => {
+  localStorage.setItem("cities", JSON.stringify(cities));
+};
+
 export const Weather: FC = () => {
   const { date } = useParams<{ date: string }>();
-  const [data, setData] = useState<WeatherData | null>(null);
-  const [city] = useState("hamburg");
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const cityInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const current = await axios.get(
-          `https://api.weatherapi.com/v1/current.json?key=${API_KEY}&q=${city}&aqi=yes`
-        );
-        const forecast = await axios.get(
-          `https://api.weatherapi.com/v1/forecast.json?key=${API_KEY}&q=${city}&days=3&aqi=yes&alerts=yes`
-        );
-        setData({
-          ...forecast.data,
-          current: current.data.current,
-          location: current.data.location,
-        });
-      } catch (error) {
-        console.error("Error fetching the weather data", error);
+  const { data: cities } = useQuery<string[]>({
+    queryKey: ["cities"],
+    queryFn: () => Promise.resolve(getCitiesFromLocalStorage()),
+    initialData: getCitiesFromLocalStorage,
+  });
+
+  const selectedCity = cities[0];
+
+  const { data, error, isLoading } = useQuery<WeatherData>({
+    queryKey: ["weather", selectedCity],
+    queryFn: async () => {
+      const current = await axios.get(
+        `https://api.weatherapi.com/v1/current.json?key=${API_KEY}&q=${selectedCity}&aqi=yes`
+      );
+      const forecast = await axios.get(
+        `https://api.weatherapi.com/v1/forecast.json?key=${API_KEY}&q=${selectedCity}&days=3&aqi=yes&alerts=yes`
+      );
+      return {
+        ...forecast.data,
+        current: current.data.current,
+        location: current.data.location,
+      };
+    },
+  });
+
+  const handleCityClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    if (cityInputRef.current) {
+      const newCity = cityInputRef.current.value.trim();
+      if (newCity && !cities.includes(newCity)) {
+        const updatedCities = [...cities, newCity];
+        setCitiesToLocalStorage(updatedCities);
+        queryClient.setQueryData(["cities"], updatedCities);
+        navigate(`/weather/${newCity}`);
       }
-    };
+    }
+  };
 
-    fetchData();
-  }, [city]);
+  const handleCitySelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newSelectedCity = e.target.value;
+    queryClient.setQueryData(["weather", newSelectedCity], null);
+    navigate(`/weather/${newSelectedCity}`);
+  };
 
-  if (!data) {
-    return <div>Loading...</div>;
-  }
+  if (isLoading) return <div>Loading...</div>;
+
+  if (error) return <div>An error has occurred: {error.message}</div>;
+
+  if (!data) return <div>Loading...</div>;
 
   const getRounded = (round: number) => Math.round(round);
 
@@ -115,12 +150,23 @@ export const Weather: FC = () => {
 
   if (!selectedForecast) {
     const today = new Date().toISOString().split("T")[0];
-    return <Navigate to={`/weather/${today}`} />;
+    return <Navigate to={`/weather/${selectedCity}/${today}`} />;
   }
 
   return (
     <div>
       <h1>Weather in {data.location.name}</h1>
+      <form>
+        <input type="text" ref={cityInputRef} placeholder="Enter city" />
+        <button onClick={handleCityClick}>Add City</button>
+      </form>
+      <select value={selectedCity} onChange={handleCitySelect}>
+        {cities.map((city, index) => (
+          <option key={index} value={city}>
+            {city}
+          </option>
+        ))}
+      </select>
       <p>Region: {data.location.region}</p>
       <p>Country: {data.location.country}</p>
       <p>Local Time: {data.location.localtime}</p>
@@ -138,8 +184,8 @@ export const Weather: FC = () => {
       {data.forecast.forecastday.map((day, index) => (
         <div key={index}>
           <NavLink
-            to={`/weather/${day.date}`}
-            style={{ textDecoration: "none", color: "inherit" }}
+            to={`/weather/${selectedCity}/${day.date}`}
+            style={{ textDecoration: "none" }}
           >
             <h3>{day.date}</h3>
           </NavLink>
